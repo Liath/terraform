@@ -83,19 +83,61 @@ func TestRemote_applyCanceled(t *testing.T) {
 	op, configCleanup := testOperationApply(t, "./testdata/apply")
 	defer configCleanup()
 
+	input := testInput(t, map[string]string{
+		"approve": "wait-for-external-update",
+	})
+
+	op.UIIn = input
+	op.UIOut = b.CLI
 	op.Workspace = backend.DefaultStateName
 
-	run, err := b.Operation(context.Background(), op)
+	ctx := context.Background()
+
+	run, err := b.Operation(ctx, op)
 	if err != nil {
 		t.Fatalf("error starting operation: %v", err)
 	}
+
+	// Wait 2 seconds to make sure the run started.
+	time.Sleep(2 * time.Second)
+
+	wl, err := b.client.Workspaces.List(
+		ctx,
+		b.organization,
+		tfe.WorkspaceListOptions{
+			ListOptions: tfe.ListOptions{PageNumber: 2, PageSize: 10},
+		},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error listing workspaces: %v", err)
+	}
+	if len(wl.Items) != 1 {
+		t.Fatalf("expected 1 workspace, got %d workspaces", len(wl.Items))
+	}
+
+	rl, err := b.client.Runs.List(ctx, wl.Items[0].ID, tfe.RunListOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error listing runs: %v", err)
+	}
+	if len(rl.Items) != 1 {
+		t.Fatalf("expected 1 run, got %d runs", len(rl.Items))
+	}
+
+	rl.Items[0].Actions.IsDiscardable = true
 
 	// Stop the run to simulate a Ctrl-C.
 	run.Stop()
 
 	<-run.Done()
-	if run.Result == backend.OperationSuccess {
-		t.Fatal("expected apply operation to fail")
+
+	// `plan` phase should have succeeded
+	if run.PlanEmpty {
+		t.Fatalf("expected a non-empty plan")
+	}
+
+	// Make sure we cleaned up the pending remote job
+	if rl.Items[0].Status != tfe.RunDiscarded {
+		t.Fatalf("expected remote run to be discarded")
 	}
 }
 

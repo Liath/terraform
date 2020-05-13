@@ -502,21 +502,22 @@ func (b *Remote) confirm(stopCtx context.Context, op *backend.Operation, opts *t
 			return fmt.Errorf("Error asking %s: %v", opts.Id, err)
 		}
 
-		// We return the error of our parent channel as we don't
-		// care about the error of the doneCtx which is only used
-		// within this function. So if the doneCtx was canceled
-		// because stopCtx was canceled, this will properly return
-		// a context.Canceled error and otherwise it returns nil.
-		if doneCtx.Err() == context.Canceled || stopCtx.Err() == context.Canceled {
-			return stopCtx.Err()
-		}
-
 		// Make sure we cancel the context here so the loop that
 		// checks for external changes to the run is ended before
 		// we start to make changes ourselves.
 		cancel()
 
-		if v != keyword {
+		// We return the error of our parent channel as we don't
+		// care about the error of the doneCtx which is only used
+		// within this function. So if the doneCtx was canceled
+		// because stopCtx was canceled, this will properly return
+		// a context.Canceled error and otherwise it returns nil.
+		killed := false
+		if doneCtx.Err() == context.Canceled || stopCtx.Err() == context.Canceled {
+			killed = true
+		}
+
+		if v != keyword || killed {
 			// Retrieve the run again to get its current status.
 			r, err = b.client.Runs.Read(stopCtx, r.ID)
 			if err != nil {
@@ -534,6 +535,9 @@ func (b *Remote) confirm(stopCtx context.Context, op *backend.Operation, opts *t
 				}
 			}
 
+			if killed {
+				return stopCtx.Err()
+			}
 			// Even if the run was discarded successfully, we still
 			// return an error as the apply command was canceled.
 			if op.Destroy {
